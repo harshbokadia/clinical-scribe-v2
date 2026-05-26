@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+websockets
+livekit
+livekit-agents
+livekit-plugins-deepgram
+groq
+httpx
+python-dotenv
+reportlab
+python-docx
