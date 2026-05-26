@@ -63,8 +63,8 @@ async def create_room():
     base_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
     return {
         "room_id": room_id,
-        "doctor_url": f"{base_url}/room/doctor/{room_id}",
-        "patient_url": f"{base_url}/room/patient/{room_id}",
+        "doctor_url": f"{base_url}/doctor/{room_id}",
+        "patient_url": f"{base_url}/patient/{room_id}",
     }
 
 
