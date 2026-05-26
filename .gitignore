@@ -1,0 +1,8 @@
+backend/venv/
+frontend/node_modules/
+__pycache__/
+*.pyc
+backend/.env
+frontend/.env
+*.pdf
+*.docx
