@@ -38,18 +38,16 @@ export default function CreateRoom() {
           <div className="links-box">
             <p className="links-label">Session created. Share these links:</p>
             <div className="link-row">
-              <div className="link-badge doctor">DOCTOR</div>
-              <span className="link-text">{links.doctor_url}</span>
-              <button className="btn-copy" onClick={() => copyLink(links.doctor_link, "doctor")}>
-                {copied === "doctor" ? "✓" : "Copy"}
-              </button>
+            <div className="link-badge doctor">DOCTOR</div>
+            <button className="btn-copy" onClick={() => copyLink(links.doctor_url, "doctor")}>
+              {copied === "doctor" ? "✓ Copied!" : "Copy"}
+            </button>
             </div>
             <div className="link-row">
-              <div className="link-badge patient">PATIENT</div>
-              <span className="link-text">{links.patient_url}</span>
-              <button className="btn-copy" onClick={() => copyLink(links.patient_link, "patient")}>
-                {copied === "patient" ? "✓" : "Copy"}
-              </button>
+            <div className="link-badge patient">PATIENT</div>
+            <button className="btn-copy" onClick={() => copyLink(links.patient_url, "patient")}>
+              {copied === "patient" ? "✓ Copied!" : "Copy"}
+            </button>
             </div>
             <button className="btn-secondary" onClick={() => { setLinks(null); }}>
               Create new session
