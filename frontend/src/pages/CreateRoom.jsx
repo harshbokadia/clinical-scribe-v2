@@ -39,14 +39,14 @@ export default function CreateRoom() {
             <p className="links-label">Session created. Share these links:</p>
             <div className="link-row">
               <div className="link-badge doctor">DOCTOR</div>
-              <span className="link-text">{links.doctor_link}</span>
+              <span className="link-text">{links.doctor_url}</span>
               <button className="btn-copy" onClick={() => copyLink(links.doctor_link, "doctor")}>
                 {copied === "doctor" ? "✓" : "Copy"}
               </button>
             </div>
             <div className="link-row">
               <div className="link-badge patient">PATIENT</div>
-              <span className="link-text">{links.patient_link}</span>
+              <span className="link-text">{links.patient_url}</span>
               <button className="btn-copy" onClick={() => copyLink(links.patient_link, "patient")}>
                 {copied === "patient" ? "✓" : "Copy"}
               </button>
