@@ -13,43 +13,50 @@ const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 export default function PatientRoom() {
   const { roomId } = useParams();
   const [name, setName] = useState("");
-  const [nameSubmitted, setNameSubmitted] = useState(false);
-  const [phase, setPhase] = useState("waiting");
   const [token, setToken] = useState(null);
-  const [liveKitUrl, setLiveKitUrl] = useState(null);
-  const [transcriptionPaused, setTranscriptionPaused] = useState(false);
+  const [lkUrl, setLkUrl] = useState(null);
+  const [joining, setJoining] = useState(false);
+  const [admitted, setAdmitted] = useState(false);
   const [transcriptionActive, setTranscriptionActive] = useState(false);
+  const [transcriptionPaused, setTranscriptionPaused] = useState(false);
   const wsRef = useRef(null);
 
-  function joinWaitingRoom() {
+  async function joinWaitingRoom() {
     if (!name.trim()) return;
+    setJoining(true);
+    try {
+      const res = await fetch(`${API}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ room_id: roomId, role: "patient", name: name.trim() }),
+      });
+      if (!res.ok) throw new Error("Failed to get token.");
+      const data = await res.json();
+      setLkUrl(data.url);
+      setToken(data.token);
+      connectWebSocket();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setJoining(false);
+    }
+  }
+
+  function connectWebSocket() {
     const wsUrl = API.replace("https://", "wss://").replace("http://", "ws://");
     const ws = new WebSocket(`${wsUrl}/ws/${roomId}`);
     wsRef.current = ws;
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "join", role: "patient", name }));
-    };
-
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
-      if (msg.type === "waiting") {
-        setPhase("waiting");
-        setNameSubmitted(true);
-      } else if (msg.type === "admitted") {
-        setToken(msg.token);
-        setLiveKitUrl(msg.url);
-        setPhase("admitted");
-      } else if (msg.type === "transcription_status") {
-        setTranscriptionActive(msg.active);
-        setTranscriptionPaused(msg.paused);
-      } else if (msg.type === "doctor_arrived") {
-        setPhase("doctor_waiting");
+      if (msg.type === "patient_admitted") setAdmitted(true);
+      if (msg.type === "transcription_state") {
+        setTranscriptionPaused(msg.state === "paused");
+        setTranscriptionActive(msg.state !== "stopped");
       }
     };
   }
 
-  if (!nameSubmitted) {
+  if (!token) {
     return (
       <div className="join-page">
         <div className="join-card">
@@ -62,16 +69,17 @@ export default function PatientRoom() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && joinWaitingRoom()}
+            autoFocus
           />
-          <button className="btn-primary" onClick={joinWaitingRoom} disabled={!name.trim()}>
-            Join Session
+          <button className="btn-primary" onClick={joinWaitingRoom} disabled={!name.trim() || joining}>
+            {joining ? "Connecting…" : "Join Session"}
           </button>
         </div>
       </div>
     );
   }
 
-  if (phase === "waiting" || phase === "doctor_waiting") {
+  if (!admitted) {
     return (
       <div className="waiting-page">
         <div className="waiting-card">
@@ -81,30 +89,15 @@ export default function PatientRoom() {
           </div>
           <h2 className="waiting-title">Waiting Room</h2>
           <p className="waiting-name">Hi, <strong>{name}</strong></p>
-          <p className="waiting-msg">
-            {phase === "doctor_waiting"
-              ? "The doctor is ready. Waiting for admission…"
-              : "Please wait. The doctor will admit you shortly."}
-          </p>
+          <p className="waiting-msg">Please wait. The doctor will admit you shortly.</p>
           <p className="waiting-room-code">Room: {roomId}</p>
         </div>
       </div>
     );
   }
 
-  if (!token) {
-    return <div className="loading-screen"><div className="spinner" />Joining consultation…</div>;
-  }
-
   return (
-    <LiveKitRoom
-      serverUrl={liveKitUrl}
-      token={token}
-      connect={true}
-      audio={true}
-      video={true}
-      onDisconnected={() => setPhase("waiting")}
-    >
+    <LiveKitRoom serverUrl={lkUrl} token={token} connect audio video onDisconnected={() => setAdmitted(false)}>
       <RoomAudioRenderer />
       <div className="room-layout">
         <header className="room-header">
@@ -120,7 +113,7 @@ export default function PatientRoom() {
               <div className="recording-badge"><span className="recording-dot" /> RECORDING</div>
             )}
             {transcriptionPaused && (
-              <div className="paused-badge"><span>⏸</span> TRANSCRIPTION PAUSED</div>
+              <div className="paused-badge">⏸ TRANSCRIPTION PAUSED</div>
             )}
           </div>
           <div className="header-right" />

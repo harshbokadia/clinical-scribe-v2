@@ -4,11 +4,7 @@ import {
   LiveKitRoom,
   VideoConference,
   RoomAudioRenderer,
-  useRoomContext,
-  useParticipants,
-  useTracks,
 } from "@livekit/components-react";
-import { Track } from "livekit-client";
 import "@livekit/components-styles";
 import SessionTimer from "../components/SessionTimer.jsx";
 import NoteEditor from "../components/NoteEditor.jsx";
@@ -18,9 +14,9 @@ const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 export default function DoctorRoom() {
   const { roomId } = useParams();
   const [name, setName] = useState("");
-  const [nameSubmitted, setNameSubmitted] = useState(false);
   const [token, setToken] = useState(null);
-  const [liveKitUrl, setLiveKitUrl] = useState(null);
+  const [lkUrl, setLkUrl] = useState(null);
+  const [joining, setJoining] = useState(false);
   const [transcript, setTranscript] = useState([]);
   const [transcriptionActive, setTranscriptionActive] = useState(false);
   const [transcriptionPaused, setTranscriptionPaused] = useState(false);
@@ -37,42 +33,78 @@ export default function DoctorRoom() {
     }
   }, [transcript]);
 
-  function joinSession() {
+  async function joinSession() {
     if (!name.trim()) return;
+    setJoining(true);
+    try {
+      const res = await fetch(`${API}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ room_id: roomId, role: "doctor", name: name.trim() }),
+      });
+      if (!res.ok) throw new Error("Failed to get token.");
+      const data = await res.json();
+      setLkUrl(data.url);
+      setToken(data.token);
+      connectWebSocket();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setJoining(false);
+    }
+  }
+
+  function connectWebSocket() {
     const wsUrl = API.replace("https://", "wss://").replace("http://", "ws://");
     const ws = new WebSocket(`${wsUrl}/ws/${roomId}`);
     wsRef.current = ws;
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "join", role: "doctor", name }));
-    };
-
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
-      if (msg.type === "doctor_joined") {
-        setToken(msg.token);
-        setLiveKitUrl(msg.url);
-        setWaitingPatients(msg.waiting || []);
-        setTranscriptionActive(msg.transcription_active);
-        setTranscriptionPaused(msg.transcription_paused);
-        setNameSubmitted(true);
-      } else if (msg.type === "waiting_update") {
-        setWaitingPatients(msg.patients || []);
-      } else if (msg.type === "transcript") {
-        setTranscript((prev) => [...prev, msg.text]);
-      } else if (msg.type === "transcription_status") {
-        setTranscriptionActive(msg.active);
-        setTranscriptionPaused(msg.paused);
+      if (msg.type === "transcript") {
+        setTranscript((prev) => [...prev, { text: msg.text, speaker: msg.speaker }]);
+      } else if (msg.type === "transcription_state") {
+        setTranscriptionPaused(msg.state === "paused");
+      } else if (msg.type === "patient_waiting") {
+        setWaitingPatients((prev) => [...prev, msg]);
       }
     };
   }
 
-  function sendControl(action) {
-    wsRef.current?.send(JSON.stringify({ type: "transcription_control", action }));
+  async function startTranscription() {
+    await fetch(`${API}/transcription/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ room: roomId }),
+    });
+    setTranscriptionActive(true);
+    setTranscriptionPaused(false);
   }
 
-  function admitPatient(patientName) {
-    wsRef.current?.send(JSON.stringify({ type: "admit", patient_name: patientName }));
+  async function pauseTranscription() {
+    await fetch(`${API}/transcription/pause`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ room: roomId }),
+    });
+    setTranscriptionPaused(true);
+  }
+
+  async function resumeTranscription() {
+    await fetch(`${API}/transcription/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ room: roomId }),
+    });
+    setTranscriptionPaused(false);
+  }
+
+  async function admitPatient(identity) {
+    await fetch(`${API}/admit-patient`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ room: roomId }),
+    });
+    setWaitingPatients((prev) => prev.filter((p) => p.identity !== identity));
   }
 
   async function handleGenerateNote() {
@@ -94,7 +126,7 @@ export default function DoctorRoom() {
     }
   }
 
-  if (!nameSubmitted) {
+  if (!token) {
     return (
       <div className="join-page">
         <div className="join-card">
@@ -107,28 +139,18 @@ export default function DoctorRoom() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && joinSession()}
+            autoFocus
           />
-          <button className="btn-primary" onClick={joinSession} disabled={!name.trim()}>
-            Start Session
+          <button className="btn-primary" onClick={joinSession} disabled={!name.trim() || joining}>
+            {joining ? "Connecting…" : "Start Session"}
           </button>
         </div>
       </div>
     );
   }
 
-  if (!token) {
-    return <div className="loading-screen"><div className="spinner" />Connecting…</div>;
-  }
-
   return (
-    <LiveKitRoom
-      serverUrl={liveKitUrl}
-      token={token}
-      connect={true}
-      audio={true}
-      video={true}
-      onDisconnected={() => setToken(null)}
-    >
+    <LiveKitRoom serverUrl={lkUrl} token={token} connect audio video onDisconnected={() => setToken(null)}>
       <RoomAudioRenderer />
       <div className="room-layout">
         <header className="room-header">
@@ -144,20 +166,16 @@ export default function DoctorRoom() {
               <div className="recording-badge"><span className="recording-dot" /> RECORDING</div>
             )}
             {transcriptionPaused && (
-              <div className="paused-badge"><span>⏸</span> PAUSED</div>
+              <div className="paused-badge">⏸ PAUSED</div>
             )}
           </div>
           <div className="header-right">
-            {waitingPatients.length > 0 && (
-              <div className="waiting-indicator">
-                {waitingPatients.map((p) => (
-                  <div key={p} className="waiting-patient">
-                    <span>{p} is waiting</span>
-                    <button className="btn-admit" onClick={() => admitPatient(p)}>Admit</button>
-                  </div>
-                ))}
+            {waitingPatients.length > 0 && waitingPatients.map((p) => (
+              <div key={p.identity} className="waiting-patient">
+                <span>🧑 {p.name || p.identity} is waiting</span>
+                <button className="btn-admit" onClick={() => admitPatient(p.identity)}>Admit</button>
               </div>
-            )}
+            ))}
           </div>
         </header>
 
@@ -169,63 +187,52 @@ export default function DoctorRoom() {
             <div className="side-panel">
               <div className="control-bar">
                 {!transcriptionActive && (
-                  <button className="btn-control start" onClick={() => sendControl("start")}>
+                  <button className="btn-control start" onClick={startTranscription}>
                     ● Start Recording
                   </button>
                 )}
                 {transcriptionActive && !transcriptionPaused && (
-                  <button className="btn-control pause" onClick={() => sendControl("pause")}>
+                  <button className="btn-control pause" onClick={pauseTranscription}>
                     ⏸ Pause
                   </button>
                 )}
                 {transcriptionActive && transcriptionPaused && (
-                  <button className="btn-control resume" onClick={() => sendControl("resume")}>
+                  <button className="btn-control resume" onClick={resumeTranscription}>
                     ▶ Resume
                   </button>
                 )}
                 {transcriptionActive && (
-                  <button className="btn-control stop" onClick={() => sendControl("stop")}>
-                    ■ Stop
+                  <button className="btn-control stop" onClick={handleGenerateNote} disabled={generatingNote}>
+                    {generatingNote ? "Generating…" : "■ Stop & Generate Note"}
                   </button>
                 )}
               </div>
-              <div className="panel panel-left">
-                <div className="panel-header">
-                  <span className="panel-label">LIVE TRANSCRIPT</span>
-                  <span className="panel-count">{transcript.length} segments</span>
-                </div>
-                <div className="transcript-body" ref={transcriptRef}>
-                  {transcript.length === 0 ? (
-                    <p className="empty-state">
-                      Press Start Recording to begin.<br />
-                      <span>Transcription will appear here in real time.</span>
-                    </p>
-                  ) : (
-                    transcript.map((line, i) => (
-                      <p key={i} className="transcript-line">
-                        <span className="transcript-index">{String(i + 1).padStart(2, "0")}</span>
-                        {line}
-                      </p>
-                    ))
-                  )}
-                </div>
+              <div className="panel-header">
+                <span className="panel-label">LIVE TRANSCRIPT</span>
+                <span className="panel-count">{transcript.length} segments</span>
               </div>
-              <button
-                className="btn-generate"
-                onClick={handleGenerateNote}
-                disabled={generatingNote || transcript.length === 0}
-              >
-                {generatingNote ? "Generating note…" : "Generate Clinical Note →"}
-              </button>
+              <div className="transcript-body" ref={transcriptRef}>
+                {transcript.length === 0 ? (
+                  <p className="empty-state">
+                    Press Start Recording to begin.<br />
+                    <span>Transcription will appear here in real time.</span>
+                  </p>
+                ) : (
+                  transcript.map((line, i) => (
+                    <p key={i} className="transcript-line">
+                      <span className="transcript-index">{String(i + 1).padStart(2, "0")}</span>
+                      {line.text}
+                    </p>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         )}
 
         {phase === "note" && note && (
           <div className="note-phase">
-            <button className="btn-back" onClick={() => setPhase("consult")}>
-              ← Back to consultation
-            </button>
+            <button className="btn-back" onClick={() => setPhase("consult")}>← Back to consultation</button>
             <NoteEditor note={note} roomId={roomId} />
           </div>
         )}
