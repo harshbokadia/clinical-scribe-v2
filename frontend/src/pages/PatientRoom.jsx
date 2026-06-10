@@ -1,11 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useRef } from "react";
 import { useParams } from "react-router-dom";
-import {
-  LiveKitRoom,
-  VideoConference,
-  RoomAudioRenderer,
-} from "@livekit/components-react";
-import "@livekit/components-styles";
+import { LiveKitRoom, RoomAudioRenderer } from "@livekit/components-react";
+import VideoGrid from "../components/VideoGrid.jsx";
+import ControlsBar from "../components/ControlsBar.jsx";
 import SessionTimer from "../components/SessionTimer.jsx";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -34,8 +31,8 @@ export default function PatientRoom() {
       const data = await res.json();
       setLkUrl(data.url);
       setToken(data.token);
+      connectWebSocket(name.trim());
       setPhase("waiting");
-      connectWebSocket();
     } catch (err) {
       alert(err.message);
     } finally {
@@ -43,10 +40,13 @@ export default function PatientRoom() {
     }
   }
 
-  function connectWebSocket() {
+  function connectWebSocket(patientName) {
     const wsUrl = API.replace("https://", "wss://").replace("http://", "ws://");
     const ws = new WebSocket(`${wsUrl}/ws/${roomId}`);
     wsRef.current = ws;
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "patient_waiting", name: patientName }));
+    };
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === "patient_admitted") setPhase("admitted");
@@ -90,9 +90,7 @@ export default function PatientRoom() {
           </div>
           <h2 className="waiting-title">You're in the waiting room</h2>
           <p className="waiting-name">Hi, <strong>{name}</strong></p>
-          <p className="waiting-msg">
-            The doctor will admit you shortly. Please keep this window open.
-          </p>
+          <p className="waiting-msg">The doctor will admit you shortly. Please keep this window open.</p>
           <div className="waiting-meta">
             <span className="waiting-dot" />
             <span>Room: {roomId}</span>
@@ -118,14 +116,13 @@ export default function PatientRoom() {
             {transcriptionActive && !transcriptionPaused && (
               <div className="recording-badge"><span className="recording-dot" /> RECORDING</div>
             )}
-            {transcriptionPaused && (
-              <div className="paused-badge">⏸ TRANSCRIPTION PAUSED</div>
-            )}
+            {transcriptionPaused && <div className="paused-badge">⏸ TRANSCRIPTION PAUSED</div>}
           </div>
           <div className="header-right" />
         </header>
-        <div className="video-full">
-          <VideoConference />
+        <div className="patient-video-layout">
+          <VideoGrid />
+          <ControlsBar />
         </div>
       </div>
     </LiveKitRoom>

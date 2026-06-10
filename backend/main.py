@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from livekit import api as livekit_api
 from note_generator import generate_note
 from document_export import export_pdf, export_docx
+from question_generator import generate_questions as generate_diagnostic_questions
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 room_transcripts: Dict[str, List[dict]] = {}
 room_connections: Dict[str, List[WebSocket]] = {}
+patient_connections: Dict[str, Dict[str, WebSocket]] = {}
 transcription_states: Dict[str, str] = {}
 
 
@@ -51,6 +54,11 @@ class TranscriptChunk(BaseModel):
 
 class RoomRequest(BaseModel):
     room: str
+
+
+class AdmitRequest(BaseModel):
+    room: str
+    patient_name: str
 
 
 class ExportRequest(BaseModel):
@@ -118,8 +126,13 @@ async def resume_transcription(req: RoomRequest):
 
 
 @app.post("/admit-patient")
-async def admit_patient(req: RoomRequest):
-    await _broadcast(req.room, {"type": "patient_admitted"})
+async def admit_patient(req: AdmitRequest):
+    ws = patient_connections.get(req.room, {}).get(req.patient_name)
+    if ws:
+        try:
+            await ws.send_json({"type": "patient_admitted"})
+        except Exception as e:
+            logger.warning("Failed to notify patient: %s", e)
     return {"status": "admitted"}
 
 
@@ -129,15 +142,37 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
     if room_id not in room_connections:
         room_connections[room_id] = []
     room_connections[room_id].append(websocket)
+
+    patient_name = None
+
     try:
         while True:
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+            except Exception:
+                continue
+
+            if msg.get("type") == "patient_waiting":
+                patient_name = msg.get("name", "Unknown")
+                if room_id not in patient_connections:
+                    patient_connections[room_id] = {}
+                patient_connections[room_id][patient_name] = websocket
+                await _broadcast_except(room_id, {
+                    "type": "patient_waiting",
+                    "name": patient_name,
+                }, exclude=websocket)
+                logger.info("Patient '%s' joined waiting room in room %s", patient_name, room_id)
+
     except WebSocketDisconnect:
         if room_id in room_connections:
             try:
                 room_connections[room_id].remove(websocket)
             except ValueError:
                 pass
+        if patient_name and room_id in patient_connections:
+            patient_connections[room_id].pop(patient_name, None)
+            await _broadcast(room_id, {"type": "patient_left", "name": patient_name})
 
 
 @app.post("/generate-note")
@@ -166,10 +201,38 @@ async def export_note_docx(req: ExportRequest):
     )
 
 
+
+@app.post("/suggest-questions")
+async def suggest_questions(req: RoomRequest):
+    transcript = room_transcripts.get(req.room, [])
+    if len(transcript) < 3:
+        return {"questions": []}
+    total_words = sum(len(t["text"].split()) for t in transcript)
+    if total_words < 20:
+        return {"questions": []}
+    full_text = " ".join([t["text"] for t in transcript])
+    questions = await generate_diagnostic_questions(full_text)
+    return {"questions": questions}
+
+
 async def _broadcast(room_id: str, message: dict):
     connections = room_connections.get(room_id, [])
     dead = []
     for ws in connections:
+        try:
+            await ws.send_json(message)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        connections.remove(ws)
+
+
+async def _broadcast_except(room_id: str, message: dict, exclude: WebSocket):
+    connections = room_connections.get(room_id, [])
+    dead = []
+    for ws in connections:
+        if ws is exclude:
+            continue
         try:
             await ws.send_json(message)
         except Exception:

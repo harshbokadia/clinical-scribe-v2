@@ -1,41 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams } from "react-router-dom";
-import {
-  LiveKitRoom,
-  VideoConference,
-  RoomAudioRenderer,
-  useRemoteParticipants,
-} from "@livekit/components-react";
-import "@livekit/components-styles";
+import { LiveKitRoom, RoomAudioRenderer } from "@livekit/components-react";
+import VideoGrid from "../components/VideoGrid.jsx";
+import ControlsBar from "../components/ControlsBar.jsx";
 import SessionTimer from "../components/SessionTimer.jsx";
 import NoteEditor from "../components/NoteEditor.jsx";
+import SuggestionsPanel from "../components/SuggestionsPanel.jsx";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-function PatientWatcher({ onPatientJoin, onPatientLeave }) {
-  const remoteParticipants = useRemoteParticipants();
-  const seenRef = useRef(new Set());
-
-  useEffect(() => {
-    const currentIds = new Set(remoteParticipants.map((p) => p.identity));
-
-    remoteParticipants.forEach((p) => {
-      if (p.identity.startsWith("patient-") && !seenRef.current.has(p.identity)) {
-        seenRef.current.add(p.identity);
-        onPatientJoin({ identity: p.identity, name: p.name });
-      }
-    });
-
-    seenRef.current.forEach((id) => {
-      if (!currentIds.has(id)) {
-        seenRef.current.delete(id);
-        onPatientLeave(id);
-      }
-    });
-  }, [remoteParticipants]);
-
-  return null;
-}
 
 export default function DoctorRoom() {
   const { roomId } = useParams();
@@ -52,6 +24,10 @@ export default function DoctorRoom() {
   const [note, setNote] = useState(null);
   const [generatingNote, setGeneratingNote] = useState(false);
   const [phase, setPhase] = useState("consult");
+  const [suggestions, setSuggestions] = useState([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsUpdated, setSuggestionsUpdated] = useState(null);
+  const suggestTimerRef = useRef(null);
   const wsRef = useRef(null);
   const transcriptRef = useRef(null);
 
@@ -63,7 +39,32 @@ export default function DoctorRoom() {
 
   useEffect(() => {
     if (waitingPatients.length > 0) setShowQueue(true);
-  }, [waitingPatients]);
+  }, [waitingPatients.length]);
+
+  useEffect(() => {
+    if (!transcriptionActive || transcript.length < 3) return;
+    const totalWords = transcript.reduce((acc, t) => acc + t.text.split(" ").length, 0);
+    if (totalWords < 20) return;
+    clearTimeout(suggestTimerRef.current);
+    suggestTimerRef.current = setTimeout(async () => {
+      setSuggestionsLoading(true);
+      try {
+        const res = await fetch(`${API}/suggest-questions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ room: roomId }),
+        });
+        const data = await res.json();
+        setSuggestions(data.questions || []);
+        setSuggestionsUpdated(new Date());
+      } catch {
+        // silent fail — never interrupt the doctor
+      } finally {
+        setSuggestionsLoading(false);
+      }
+    }, 2000);
+    return () => clearTimeout(suggestTimerRef.current);
+  }, [transcript.length, transcriptionActive]);
 
   async function joinSession() {
     if (!name.trim()) return;
@@ -96,6 +97,14 @@ export default function DoctorRoom() {
         setTranscript((prev) => [...prev, { text: msg.text, speaker: msg.speaker }]);
       } else if (msg.type === "transcription_state") {
         setTranscriptionPaused(msg.state === "paused");
+      } else if (msg.type === "patient_waiting") {
+        setWaitingPatients((prev) => {
+          if (prev.find((p) => p.name === msg.name)) return prev;
+          return [...prev, { name: msg.name }];
+        });
+      } else if (msg.type === "patient_left") {
+        setWaitingPatients((prev) => prev.filter((p) => p.name !== msg.name));
+        setAdmittedPatients((prev) => prev.filter((p) => p.name !== msg.name));
       }
     };
   }
@@ -128,15 +137,14 @@ export default function DoctorRoom() {
     setTranscriptionPaused(false);
   }
 
-  async function admitPatient(identity) {
+  async function admitPatient(patientName) {
     await fetch(`${API}/admit-patient`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ room: roomId }),
+      body: JSON.stringify({ room: roomId, patient_name: patientName }),
     });
-    const patient = waitingPatients.find((p) => p.identity === identity);
-    if (patient) setAdmittedPatients((prev) => [...prev, patient]);
-    setWaitingPatients((prev) => prev.filter((p) => p.identity !== identity));
+    setWaitingPatients((prev) => prev.filter((p) => p.name !== patientName));
+    setAdmittedPatients((prev) => [...prev, { name: patientName }]);
   }
 
   async function handleGenerateNote() {
@@ -181,16 +189,28 @@ export default function DoctorRoom() {
     );
   }
 
+  const transcriptionControls = (
+    <>
+      {!transcriptionActive && (
+        <button className="ctrl-btn start" onClick={startTranscription}>● Start Recording</button>
+      )}
+      {transcriptionActive && !transcriptionPaused && (
+        <button className="ctrl-btn pause" onClick={pauseTranscription}>⏸ Pause</button>
+      )}
+      {transcriptionActive && transcriptionPaused && (
+        <button className="ctrl-btn resume" onClick={resumeTranscription}>▶ Resume</button>
+      )}
+      {transcriptionActive && (
+        <button className="ctrl-btn stop" onClick={handleGenerateNote} disabled={generatingNote}>
+          {generatingNote ? "Generating…" : "■ Stop & Generate Note"}
+        </button>
+      )}
+    </>
+  );
+
   return (
     <LiveKitRoom serverUrl={lkUrl} token={token} connect audio video onDisconnected={() => setToken(null)}>
       <RoomAudioRenderer />
-      <PatientWatcher
-        onPatientJoin={(p) => setWaitingPatients((prev) => [...prev, p])}
-        onPatientLeave={(id) => {
-          setWaitingPatients((prev) => prev.filter((p) => p.identity !== id));
-          setAdmittedPatients((prev) => prev.filter((p) => p.identity !== id));
-        }}
-      />
 
       {showQueue && (
         <div className="queue-overlay">
@@ -207,14 +227,12 @@ export default function DoctorRoom() {
                   <div className="queue-section">
                     <p className="queue-section-label">WAITING</p>
                     {waitingPatients.map((p) => (
-                      <div key={p.identity} className="queue-item waiting-item">
+                      <div key={p.name} className="queue-item waiting-item">
                         <div className="queue-item-info">
                           <span className="queue-dot waiting-dot-pulse" />
-                          <span className="queue-patient-name">{p.name || p.identity}</span>
+                          <span className="queue-patient-name">{p.name}</span>
                         </div>
-                        <button className="btn-admit" onClick={() => admitPatient(p.identity)}>
-                          Admit
-                        </button>
+                        <button className="btn-admit" onClick={() => admitPatient(p.name)}>Admit</button>
                       </div>
                     ))}
                   </div>
@@ -223,10 +241,10 @@ export default function DoctorRoom() {
                   <div className="queue-section">
                     <p className="queue-section-label">IN SESSION</p>
                     {admittedPatients.map((p) => (
-                      <div key={p.identity} className="queue-item admitted-item">
+                      <div key={p.name} className="queue-item admitted-item">
                         <div className="queue-item-info">
                           <span className="queue-dot admitted-dot" />
-                          <span className="queue-patient-name">{p.name || p.identity}</span>
+                          <span className="queue-patient-name">{p.name}</span>
                         </div>
                         <span className="queue-status">Active</span>
                       </div>
@@ -252,9 +270,7 @@ export default function DoctorRoom() {
             {transcriptionActive && !transcriptionPaused && (
               <div className="recording-badge"><span className="recording-dot" /> RECORDING</div>
             )}
-            {transcriptionPaused && (
-              <div className="paused-badge">⏸ PAUSED</div>
-            )}
+            {transcriptionPaused && <div className="paused-badge">⏸ PAUSED</div>}
           </div>
           <div className="header-right">
             <button className="btn-queue" onClick={() => setShowQueue((v) => !v)}>
@@ -269,31 +285,10 @@ export default function DoctorRoom() {
         {phase === "consult" && (
           <div className="consult-layout">
             <div className="video-area">
-              <VideoConference />
+              <VideoGrid />
+              <ControlsBar extraControls={transcriptionControls} />
             </div>
             <div className="side-panel">
-              <div className="control-bar">
-                {!transcriptionActive && (
-                  <button className="btn-control start" onClick={startTranscription}>
-                    ● Start Recording
-                  </button>
-                )}
-                {transcriptionActive && !transcriptionPaused && (
-                  <button className="btn-control pause" onClick={pauseTranscription}>
-                    ⏸ Pause
-                  </button>
-                )}
-                {transcriptionActive && transcriptionPaused && (
-                  <button className="btn-control resume" onClick={resumeTranscription}>
-                    ▶ Resume
-                  </button>
-                )}
-                {transcriptionActive && (
-                  <button className="btn-control stop" onClick={handleGenerateNote} disabled={generatingNote}>
-                    {generatingNote ? "Generating…" : "■ Stop & Generate Note"}
-                  </button>
-                )}
-              </div>
               <div className="panel-header">
                 <span className="panel-label">LIVE TRANSCRIPT</span>
                 <span className="panel-count">{transcript.length} segments</span>
@@ -313,6 +308,13 @@ export default function DoctorRoom() {
                   ))
                 )}
               </div>
+              {transcriptionActive && (
+                <SuggestionsPanel
+                  suggestions={suggestions}
+                  loading={suggestionsLoading}
+                  updatedAt={suggestionsUpdated}
+                />
+              )}
             </div>
           </div>
         )}
