@@ -4,12 +4,29 @@ import {
   LiveKitRoom,
   VideoConference,
   RoomAudioRenderer,
+  useRemoteParticipants,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
 import SessionTimer from "../components/SessionTimer.jsx";
 import NoteEditor from "../components/NoteEditor.jsx";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
+function PatientWatcher({ onPatientJoin }) {
+  const remoteParticipants = useRemoteParticipants();
+  const seenRef = useRef(new Set());
+
+  useEffect(() => {
+    remoteParticipants.forEach((p) => {
+      if (p.identity.startsWith("patient-") && !seenRef.current.has(p.identity)) {
+        seenRef.current.add(p.identity);
+        onPatientJoin({ identity: p.identity, name: p.name });
+      }
+    });
+  }, [remoteParticipants]);
+
+  return null;
+}
 
 export default function DoctorRoom() {
   const { roomId } = useParams();
@@ -64,8 +81,6 @@ export default function DoctorRoom() {
         setTranscript((prev) => [...prev, { text: msg.text, speaker: msg.speaker }]);
       } else if (msg.type === "transcription_state") {
         setTranscriptionPaused(msg.state === "paused");
-      } else if (msg.type === "patient_waiting") {
-        setWaitingPatients((prev) => [...prev, msg]);
       }
     };
   }
@@ -152,6 +167,7 @@ export default function DoctorRoom() {
   return (
     <LiveKitRoom serverUrl={lkUrl} token={token} connect audio video onDisconnected={() => setToken(null)}>
       <RoomAudioRenderer />
+      <PatientWatcher onPatientJoin={(p) => setWaitingPatients((prev) => [...prev, p])} />
       <div className="room-layout">
         <header className="room-header">
           <div className="header-left">
