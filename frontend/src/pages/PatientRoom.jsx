@@ -16,7 +16,7 @@ export default function PatientRoom() {
   const [token, setToken] = useState(null);
   const [lkUrl, setLkUrl] = useState(null);
   const [joining, setJoining] = useState(false);
-  const [admitted, setAdmitted] = useState(false);
+  const [phase, setPhase] = useState("name");
   const [transcriptionActive, setTranscriptionActive] = useState(false);
   const [transcriptionPaused, setTranscriptionPaused] = useState(false);
   const wsRef = useRef(null);
@@ -34,6 +34,7 @@ export default function PatientRoom() {
       const data = await res.json();
       setLkUrl(data.url);
       setToken(data.token);
+      setPhase("waiting");
       connectWebSocket();
     } catch (err) {
       alert(err.message);
@@ -48,7 +49,7 @@ export default function PatientRoom() {
     wsRef.current = ws;
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
-      if (msg.type === "patient_admitted") setAdmitted(true);
+      if (msg.type === "patient_admitted") setPhase("admitted");
       if (msg.type === "transcription_state") {
         setTranscriptionPaused(msg.state === "paused");
         setTranscriptionActive(msg.state !== "stopped");
@@ -56,7 +57,7 @@ export default function PatientRoom() {
     };
   }
 
-  if (!token) {
+  if (phase === "name") {
     return (
       <div className="join-page">
         <div className="join-card">
@@ -65,7 +66,7 @@ export default function PatientRoom() {
           <p className="join-sub">Room: <span className="room-code">{roomId}</span></p>
           <input
             className="name-input"
-            placeholder="Enter your name"
+            placeholder="Enter your full name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && joinWaitingRoom()}
@@ -79,7 +80,7 @@ export default function PatientRoom() {
     );
   }
 
-  if (!admitted) {
+  if (phase === "waiting") {
     return (
       <div className="waiting-page">
         <div className="waiting-card">
@@ -87,17 +88,22 @@ export default function PatientRoom() {
             <div className="pulse-ring" />
             <div className="pulse-ring delay" />
           </div>
-          <h2 className="waiting-title">Waiting Room</h2>
+          <h2 className="waiting-title">You're in the waiting room</h2>
           <p className="waiting-name">Hi, <strong>{name}</strong></p>
-          <p className="waiting-msg">Please wait. The doctor will admit you shortly.</p>
-          <p className="waiting-room-code">Room: {roomId}</p>
+          <p className="waiting-msg">
+            The doctor will admit you shortly. Please keep this window open.
+          </p>
+          <div className="waiting-meta">
+            <span className="waiting-dot" />
+            <span>Room: {roomId}</span>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <LiveKitRoom serverUrl={lkUrl} token={token} connect audio video onDisconnected={() => setAdmitted(false)}>
+    <LiveKitRoom serverUrl={lkUrl} token={token} connect audio video onDisconnected={() => setPhase("waiting")}>
       <RoomAudioRenderer />
       <div className="room-layout">
         <header className="room-header">

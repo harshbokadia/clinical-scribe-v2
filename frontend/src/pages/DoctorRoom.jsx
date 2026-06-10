@@ -12,15 +12,24 @@ import NoteEditor from "../components/NoteEditor.jsx";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-function PatientWatcher({ onPatientJoin }) {
+function PatientWatcher({ onPatientJoin, onPatientLeave }) {
   const remoteParticipants = useRemoteParticipants();
   const seenRef = useRef(new Set());
 
   useEffect(() => {
+    const currentIds = new Set(remoteParticipants.map((p) => p.identity));
+
     remoteParticipants.forEach((p) => {
       if (p.identity.startsWith("patient-") && !seenRef.current.has(p.identity)) {
         seenRef.current.add(p.identity);
         onPatientJoin({ identity: p.identity, name: p.name });
+      }
+    });
+
+    seenRef.current.forEach((id) => {
+      if (!currentIds.has(id)) {
+        seenRef.current.delete(id);
+        onPatientLeave(id);
       }
     });
   }, [remoteParticipants]);
@@ -38,6 +47,8 @@ export default function DoctorRoom() {
   const [transcriptionActive, setTranscriptionActive] = useState(false);
   const [transcriptionPaused, setTranscriptionPaused] = useState(false);
   const [waitingPatients, setWaitingPatients] = useState([]);
+  const [admittedPatients, setAdmittedPatients] = useState([]);
+  const [showQueue, setShowQueue] = useState(false);
   const [note, setNote] = useState(null);
   const [generatingNote, setGeneratingNote] = useState(false);
   const [phase, setPhase] = useState("consult");
@@ -49,6 +60,10 @@ export default function DoctorRoom() {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
     }
   }, [transcript]);
+
+  useEffect(() => {
+    if (waitingPatients.length > 0) setShowQueue(true);
+  }, [waitingPatients]);
 
   async function joinSession() {
     if (!name.trim()) return;
@@ -119,6 +134,8 @@ export default function DoctorRoom() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ room: roomId }),
     });
+    const patient = waitingPatients.find((p) => p.identity === identity);
+    if (patient) setAdmittedPatients((prev) => [...prev, patient]);
     setWaitingPatients((prev) => prev.filter((p) => p.identity !== identity));
   }
 
@@ -167,7 +184,61 @@ export default function DoctorRoom() {
   return (
     <LiveKitRoom serverUrl={lkUrl} token={token} connect audio video onDisconnected={() => setToken(null)}>
       <RoomAudioRenderer />
-      <PatientWatcher onPatientJoin={(p) => setWaitingPatients((prev) => [...prev, p])} />
+      <PatientWatcher
+        onPatientJoin={(p) => setWaitingPatients((prev) => [...prev, p])}
+        onPatientLeave={(id) => {
+          setWaitingPatients((prev) => prev.filter((p) => p.identity !== id));
+          setAdmittedPatients((prev) => prev.filter((p) => p.identity !== id));
+        }}
+      />
+
+      {showQueue && (
+        <div className="queue-overlay">
+          <div className="queue-panel">
+            <div className="queue-header">
+              <span className="queue-title">🧑 Patient Queue</span>
+              <button className="queue-close" onClick={() => setShowQueue(false)}>✕</button>
+            </div>
+            {waitingPatients.length === 0 && admittedPatients.length === 0 ? (
+              <p className="queue-empty">No patients in queue.</p>
+            ) : (
+              <>
+                {waitingPatients.length > 0 && (
+                  <div className="queue-section">
+                    <p className="queue-section-label">WAITING</p>
+                    {waitingPatients.map((p) => (
+                      <div key={p.identity} className="queue-item waiting-item">
+                        <div className="queue-item-info">
+                          <span className="queue-dot waiting-dot-pulse" />
+                          <span className="queue-patient-name">{p.name || p.identity}</span>
+                        </div>
+                        <button className="btn-admit" onClick={() => admitPatient(p.identity)}>
+                          Admit
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {admittedPatients.length > 0 && (
+                  <div className="queue-section">
+                    <p className="queue-section-label">IN SESSION</p>
+                    {admittedPatients.map((p) => (
+                      <div key={p.identity} className="queue-item admitted-item">
+                        <div className="queue-item-info">
+                          <span className="queue-dot admitted-dot" />
+                          <span className="queue-patient-name">{p.name || p.identity}</span>
+                        </div>
+                        <span className="queue-status">Active</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="room-layout">
         <header className="room-header">
           <div className="header-left">
@@ -186,12 +257,12 @@ export default function DoctorRoom() {
             )}
           </div>
           <div className="header-right">
-            {waitingPatients.length > 0 && waitingPatients.map((p) => (
-              <div key={p.identity} className="waiting-patient">
-                <span>🧑 {p.name || p.identity} is waiting</span>
-                <button className="btn-admit" onClick={() => admitPatient(p.identity)}>Admit</button>
-              </div>
-            ))}
+            <button className="btn-queue" onClick={() => setShowQueue((v) => !v)}>
+              🧑 Queue
+              {waitingPatients.length > 0 && (
+                <span className="queue-badge">{waitingPatients.length}</span>
+              )}
+            </button>
           </div>
         </header>
 
